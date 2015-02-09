@@ -1,0 +1,56 @@
+<?php
+/*
+*@author Martin Scholz, unless otherwise said
+*/
+
+/**
+* @author Martin Scholz
+*/
+function wisski_merge_schema () {
+
+  $schemas = array();
+
+  $schemas['wisski_merge'] = array(
+    'fields' => array(
+      'from_uri' => array(
+        'type' => 'varchar',
+        'length' => '10000',
+        'not null' => TRUE,
+      ),
+      'to_uri' => array(
+        'type' => 'varchar',
+        'length' => '10000',
+        'not null' => TRUE,
+      ),
+      'affected' => array(
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => TRUE,
+      ),
+      'timestamp' => array(
+        'type' => 'int',
+        'size' => 'normal',
+        'not null' => TRUE,
+      ),
+    ),
+  );
+
+  return $schemas;
+
+}
+
+
+/**
+* @author Martin Scholz
+*/
+function wisski_merge_install () {
+  drupal_install_schema('wisski_merge');
+}
+
+
+/**
+* @author Martin Scholz
+*/
+function wisski_merge_uninstall () {
+  drupal_uninstall_schema('wisski_merge');
+}

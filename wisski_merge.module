@@ -1,0 +1,194 @@
+<?php
+// $Id$
+
+/* provide a search form for top groups
+* and searching functionality
+* @author Martin Scholz unless otherwise noted
+*/
+
+
+
+function wisski_merge_perm() {
+  
+  return array('wisski merge instances');
+
+}
+
+
+/** Implemenation of hook_menu
+*/
+function wisski_merge_menu () {
+
+  $item['node/%node/instance_merge'] = array(
+    'title' => 'Merge',
+    'page callback' => 'wisski_merge_',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('wisski_merge_form', 1),
+    'type' => MENU_LOCAL_TASK,
+    'access arguments' => array('wisski merge instances'),
+  );
+  
+
+  return $item;
+
+}
+
+
+/** Implementation of hook_load
+*/
+function wisski_merge_do($instances, $backup = TRUE) {
+  
+  if (count($instances) < 2) return FALSE;
+
+  $to_inst = array_shift($instances);
+  $instances = array_unique($instances);
+
+  $store = wisski_store_getObj()->wisski_ARCAdapter_getStore();
+
+  while ($from_inst = array_shift($instances)) {
+
+    if ($from_inst == $to_inst) continue;
+    
+    $bak = array();
+    $triples_in_graphs = array();
+
+    $queries = array(
+      'incoming' => "SELECT DISTINCT * WHERE { GRAPH ?g { ?s ?p <$from_inst> . } }", 
+      'outgoing' => "SELECT DISTINCT * WHERE { GRAPH ?g { <$from_inst> ?p ?o . } }"
+    );
+    
+    foreach ($queries as $t => $q) {
+
+      $rows = $store->query($q, 'rows');
+      if ($store->getErrors()) {
+        foreach ($store->getErrors() as $e) drupal_set_message(check_plain("TS error: $e"), "error");
+      }
+
+      if ($backup) $bak[$t] = $rows;
+
+      foreach ($rows as $row) {
+        $triple = array(
+          'p' => $row['p'],
+        );
+
+        if (isset($row['s'])) {
+          // o and s are both $to_inst and the triple is thus twice in the data, skip to avoid duplicates
+          if ($row['s type'] == 'uri' && $row['s'] == $to_inst) continue;
+          $triple['s'] = $row['s'];
+          $triple['s_type'] = $row['s type'];
+          $triple['o'] = $to_inst;
+          $triple['o_type'] = 'uri';
+        } else {
+          $triple['s'] = $to_inst;
+          $triple['s_type'] = 'uri';
+          if ($row['s type'] == 'uri' && $row['s'] == $to_inst) {
+            $triple['o'] = $to_inst;
+            $triple['o_type'] = 'uri';
+          } else {
+            $triple['o'] = $row['o'];
+            $triple['o_type'] = $row['o type'];
+          }
+        }
+
+        $triples_in_graphs[$row['g']][] = $triple;
+
+      }
+    
+    }
+ 
+    if ($backup) $bak['new'] = $triples_in_graphs;
+
+    foreach ($triples_in_graphs as $graph => $triples) {
+      $store->insert($triples, $graph);
+      if ($store->getErrors()) {
+        foreach ($store->getErrors() as $e) drupal_set_message(check_plain("TS error: $e"), "error");
+      }
+    }
+    
+    // node delete will also delete all triples so we don't have to bother
+    $nid = wisski_store_get_nid_for_instance($from_inst);
+    node_delete($nid);
+    
+    if ($backup) {
+      db_query("INSERT INTO {wisski_merge} (from_uri, to_uri, affected, timestamp) VALUES ('%s', '%s', '%s', '%d')", $from_inst, $to_inst, serialize($bak), time());
+    }
+    drupal_set_message(t('Merged instance %inst', array('%inst' => $from_inst)));
+    
+  }
+  
+  return TRUE;
+
+}
+
+
+function wisski_merge_form($form, $node) {
+
+  $form = array();
+  
+  $form['info'] = array(
+    '#type' => 'markup',
+    '#value' => '<p>' . t('Here you can specify instances/objects that shall be merged with this instance/object.') . '</p>'
+              . '<p>' . t("Open another browser window and go to the other instance that you want to merge. Copy its URL from the browser's address field and paste it into the text field below. Make sure that the pasted URL begins with 'http'. (in the browser's field the http may be hidden, but it should appear in the text field below!)") . '</p>'
+              . '<p>' . t("You can specify multiple instances/objects that shall all be merged with this one. Just copy each URL in the text field below, one per line.") . '</p>',
+  );
+  
+  $form["nid"] = array(
+    '#type' => 'hidden',
+    '#value' => $node->nid,
+  );
+
+  $form["to_uri"] = array(
+    '#type' => 'hidden',
+    '#value' => wisski_store_getObj()->wisski_ARCAdapter_delNamespace($node->title),
+  );
+
+  $form['insts'] = array(
+    '#type' => 'textarea',
+    '#title' => 'Instances to be merged',
+    '#rows' => 10,
+  );
+
+  $form['warning'] = array(
+    '#type' => 'markup',
+    '#prefix' => '<div class="messages warn">',
+    '#value' => t('Warning: This action cannot be undone! Be careful!'),
+    '#suffix' => '</div>',
+  );
+  
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Merge'),
+  );
+
+  return $form;
+
+}
+
+
+
+function wisski_merge_form_submit($form, $form_state) {
+  
+  $uris = array();
+  foreach (explode("\n", $form_state['values']['insts']) as $l) {
+    dpm($l, 'l');
+    $l = trim($l);
+    if ($l != '') {
+      if (mb_substr($l, 0, 1) == '<' && mb_substr($l, -1, 1) == '>') {
+        $uris[] = mb_substr($l, 1, mb_strlen($l) -2);
+      } elseif (mb_substr($l, 0, 7) == 'http://') {
+        $uris[] = $l;
+      } else {
+        drupal_set_message(t("Skipping malformed URI: %l. If you know it is right, enclose it in %b", array("%l" => $l, "%b" => "<>")), 'error');
+      }
+    }
+  }
+
+  $to_uri = $form_state['values']['to_uri'];
+  dpm($to_uri, 'tu');
+  array_unshift($uris, $to_uri);
+  dpm($uris);
+
+  wisski_merge_do($uris, TRUE);
+
+}
+        
